@@ -1,4 +1,4 @@
-# wisp-client-crystal
+# wisp-server-crystal
 tldr: A janky wisp server port to crystal-lang, expect bugs.
 
 Stability untested, only basic testing was done to see if it "works"
