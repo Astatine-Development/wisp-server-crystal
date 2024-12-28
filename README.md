@@ -1,2 +1,18 @@
-# wisp-server-crystal
-Wisp server implementation in crystal lang.
+# wisp-client-crystal
+tldr: A janky wisp server port to crystal-lang, expect bugs.
+
+Stability untested, only basic testing was done to see if it "works"
+UDP support completely untested atm, some other things might be broken, not really sure.
+
+  
+> # `How to use?`
+
+-------------------------------------------------------------------------------
+
+> Install crystal (https://crystal-lang.org/install/)
+
+> Clone this repo and cd into it
+
+> For testing run `crystal run wisp.cr` if you make a program using it you can have a production compile with `crystal build wisp.cr --release --no-debug --progress -o wisp` (replace demo with your program)
+
+> Defaults on port 3001
