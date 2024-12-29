@@ -335,5 +335,5 @@ class WispServer
   end
 end
 
-server = WispServer.new(3001)
+server = WispServer.new(6001)
 server.start
