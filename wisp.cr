@@ -80,6 +80,7 @@ class Connection
   property hostname : String
   property port : Int32
   property last_continue : Time
+  property closing : Bool = false
 
   def initialize(@socket, @hostname = "", @port = 0, @stream_type = StreamType::TCP)
     @buffer = 127
@@ -106,6 +107,7 @@ class WispServer
   def initialize(@port : Int32 = 3000, @path : String = "/wisp/")
     raise "Wisp endpoints must end with a trailing forward slash" unless @path.ends_with?("/")
     @connections = {} of UInt32 => Connection
+    Log.info { "Server initializing on port #{@port}" }
   end
 
   def start
@@ -125,15 +127,8 @@ class WispServer
 
   private def handle_websocket(socket : HTTP::WebSocket)
     send_continue_packet(socket, 0_u32, INITIAL_BUFFER_SIZE)
-
-    socket.on_binary do |message|
-      handle_message(socket, message)
-    end
-
-    socket.on_close do
-      cleanup_all_connections(socket)
-    end
-
+    socket.on_binary { |message| handle_message(socket, message) }
+    socket.on_close { cleanup_all_connections(socket) }
     socket.on_ping { |data| socket.pong(data) }
   end
 
@@ -152,10 +147,12 @@ class WispServer
 
   private def validate_connection_request(hostname : String, port : Int32)
     raise WispError.new(CloseReason::INVALID_INFO) if port <= 0 || port > 65535
-    if hostname.matches?(/^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)/) || hostname.matches?(/^(127\.|0\.0\.0\.0)/)
-      raise WispError.new(CloseReason::BLOCKED)
-    end
   end
+
+  #if hostname.matches?(/^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)/) || hostname.matches?(/^(127\.|0\.0\.0\.0)/)
+    #Log.warn { "Blocked connection to private address: #{hostname}" }
+    #raise WispError.new(CloseReason::BLOCKED)
+  #end
 
   private def handle_connect(socket : HTTP::WebSocket, packet : WispPacket)
     stream_type = packet.payload[0]
@@ -222,11 +219,9 @@ class WispServer
     Log.error { "TCP error on stream #{stream_id}: #{ex.message}" }
     handle_error(connection.socket, stream_id, WispError.new(CloseReason::NETWORK_ERROR))
   ensure
+    connection.closing = true
     cleanup_stream(stream_id)
-    begin
-      send_close_packet(connection.socket, stream_id, CloseReason::VOLUNTARY.value)
-    rescue
-    end
+    send_close_packet(connection.socket, stream_id, CloseReason::VOLUNTARY.value)
   end
 
   private def handle_udp_read(stream_id : UInt32, connection : Connection, udp_socket : UDPSocket)
@@ -235,6 +230,7 @@ class WispServer
       send_data_packet(connection.socket, stream_id, buffer[0, bytes_read])
     end
   rescue ex : Socket::Error
+    Log.error { "UDP error on stream #{stream_id}: #{ex.message}" }
     handle_error(connection.socket, stream_id, WispError.new(CloseReason::NETWORK_ERROR))
   ensure
     cleanup_stream(stream_id)
@@ -243,12 +239,14 @@ class WispServer
   private def handle_data(socket : HTTP::WebSocket, packet : WispPacket)
     return unless connection = @connections[packet.stream_id]?
     return unless stream = connection.stream
+    return if connection.closing
 
     case connection.stream_type
     when StreamType::TCP then handle_tcp_data(connection, packet)
     when StreamType::UDP then handle_udp_data(connection, packet)
     end
   rescue ex
+    Log.error { "Data handling error: #{ex.message}" }
     handle_error(socket, packet.stream_id, WispError.new(CloseReason::NETWORK_ERROR))
   end
 
@@ -281,6 +279,9 @@ class WispServer
   end
 
   private def handle_error(socket : HTTP::WebSocket, stream_id : UInt32, error : Exception)
+    return unless connection = @connections[stream_id]?
+    return if connection.closing
+
     reason = case error
     when Socket::ConnectError   then CloseReason::REFUSED
     when Socket::TimeoutError   then CloseReason::TIMEOUT
@@ -291,6 +292,7 @@ class WispServer
     end
 
     Log.error { "Stream #{stream_id} error: #{error.message}" }
+    connection.closing = true
     send_close_packet(socket, stream_id, reason.value)
     cleanup_stream(stream_id)
   end
@@ -301,7 +303,7 @@ class WispServer
     socket.send(packet.to_bytes)
   rescue IO::Error
   end
-  
+
   private def send_continue_packet(socket : HTTP::WebSocket, stream_id : UInt32, buffer_size : Int32)
     return if socket.closed?
     payload = IO::Memory.new
@@ -310,14 +312,13 @@ class WispServer
     socket.send(packet.to_bytes)
   rescue IO::Error
   end
-  
+
   private def send_close_packet(socket : HTTP::WebSocket, stream_id : UInt32, reason : UInt8)
     return if socket.closed?
     packet = WispPacket.new(PacketType::CLOSE, stream_id, Bytes[reason])
     socket.send(packet.to_bytes)
   rescue IO::Error
   end
-  
 
   private def cleanup_stream(stream_id : UInt32)
     if connection = @connections[stream_id]?
